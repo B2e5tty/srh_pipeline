@@ -1,0 +1,5 @@
+apache-airflow-providers-postgres
+pandas
+sqlalchemy
+psycopg2-binary
+google-generativeai
