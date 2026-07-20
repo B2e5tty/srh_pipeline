@@ -14,8 +14,8 @@ logger = logging.getLogger(__name__)
 
 @dag(
     dag_id="main",
-    start_date=datetime(2026, 6, 29),
-    schedule=timedelta(hours=3),
+    # start_date=datetime(2026, 6, 29),
+    # schedule=timedelta(hours=3),
     catchup=False,
     tags=["emotion_detection", "gemini", "chat_analysis"]
 )

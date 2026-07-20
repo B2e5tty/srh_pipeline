@@ -214,9 +214,9 @@ class chatmessage_analyze():
                             raise Exception(
                                 f"Exceeded max quota retries ({_MAX_QUOTA_RETRIES}) for Gemini API"
                             ) from e
-                        print(f"Rate limit reached. Waiting 65 seconds... "
+                        print(f"Rate limit reached. Waiting 120 seconds... "
                               f"(retry {quota_retries}/{_MAX_QUOTA_RETRIES})")
-                        time.sleep(65)
+                        time.sleep(120)
                         continue
 
                     # Invalid API key - rotate to the next one
@@ -416,6 +416,14 @@ class chatmessage_analyze():
             json_str = response[start_idx:end_idx]
             try:
                 emotion_result = json.loads(json_str)
+
+                if isinstance(emotion_result,list):
+                    if len(emotion_result) > 0:
+                        self.parent.logger.warning("Received a list instead of a dict, taking the first element")
+                        emotion_result = emotion_result[0]
+                    else:
+                        emotion_result = {}
+
                 emotion_ratings = emotion_result.get('emotion_ratings', {})
                 primary_emotion = emotion_result.get('primary_emotion')
                 confidence = emotion_result.get('confidence', 0.0)

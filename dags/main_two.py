@@ -13,10 +13,10 @@ logger = logging.getLogger(__name__)
 
 @dag(
     dag_id="main_two",
-    start_date=datetime(2026, 6, 29),
+    start_date=datetime(2026, 7, 21),
     schedule=timedelta(hours=3),
     catchup=False,
-    tags=["emotion_detection", "gemini", "chat_analysis"]
+    tags=["gemini", "chat_analysis"]
 )
 def main_two():
 
