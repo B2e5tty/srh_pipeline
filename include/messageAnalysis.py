@@ -308,6 +308,14 @@ class chatmessage_analyze():
                     "confidence": 0.85,
                     "reasoning": "የምርጫው ምክንያት በአማርኛ"
                 }}
+
+                አስፈላጊ፦
+                - ሁሉንም መልእክቶች በአንድ ላይ እንደ አንድ ነጠላ ውይይት በመውሰድ ይተንትኑ።
+                - የጠቅላላውን ውይይት ዋና ዓላማ (intent) የሚወክል በትክክል አንድ የ-JSON ኦብጄክት (JSON object) ብቻ ይመልሱ።
+                - ነጠላ መልእክቶችን ለየብቻ አይመድቡ።
+                - የ-JSON አሬይ (JSON array) አይመልሱ።
+                -ከአንድ በላይ የዓላማ ምደባዎችን (intent classifications) አይመልሱ።
+                - ምላሹ የግድ አንድ ነጠላ የ-JSON ኦብጄክት ብቻ መሆን አለበት።
                 """
                 return prompt
 
@@ -343,12 +351,18 @@ class chatmessage_analyze():
                     "reasoning": "Ibsa gabaabaa xiinxala miiraa"
                 }}
 
-                Iddoo Guddaa:
-                - Miira HUNDA madaali (NEUTRAL dabalatee)
-                - Miirri tokko qofti akka primary_emotion-tti mallatteeffamuu qaba
-                - Sagalee miira walii-galaa ergaawwan hunda keessa jiru tilmaama keessa galchi
-                - Qabiyyee fayyaa saal-qunnamtii fi hormaataa irratti xiyyeeffadhu
-                - Miirri jabaan yoo hin argamne, NEUTRAL madaallii ol'aanaa qabaachuu qaba
+                Hangafoota:
+                - Ergaawwan hundumaa keessatti bifa walii-galaa jiru tilmaama keessa galchi
+                - Yoo kaayyoon baay'een jiraate, isa dhimma guddaa ta'e filadhu
+                - Kaayyoon sun hangam ifa akka ta'e irratti hundaa'uun qabxii amanamummaa kenni
+                - Xiyyeeffannoo kee dhimmoota fayyaa saalaa fi fana dhalootaa irratti godhadhu
+                - Ergaawwan JIRAN HUNDA akka marii tokkootti waliin xiinxali.
+                - Kaayyoo ijoo guutuu mariichaa kan argisiisu object JSON HAGAM TOKKO QOFA deebisi.
+                - Ergaawwan dhuunfaa addaan baastee hin ramadin.
+                - Array JSON hin deebisin.
+                - Ramaddii kaayyoo tokkoo ol hin deebisin.
+
+                Deebichi dirqama object JSON tokko qofa ta'uu qaba.
                 """
                 return prompt
 
@@ -386,11 +400,18 @@ class chatmessage_analyze():
                 }}
 
                 Important:
-                - Rate ALL emotions (including NEUTRAL)
-                - Only one emotion should be marked as primary_emotion
-                - Consider the overall emotional tone across all messages
+                - Consider the overall pattern across all messages
+                - If multiple intents are present, choose the most prominent one
+                - Provide confidence based on how clear the intent is
                 - Focus on sexual and reproductive health context
-                - If no strong emotions are detected, NEUTRAL should have the highest rating
+                - Analyze ALL messages together as a single conversation.
+                - Return EXACTLY ONE JSON object representing the primary intent of the entire conversation.
+                - Do NOT classify individual messages.
+                - Do NOT return a JSON array.
+                - Do NOT return multiple intent classifications.
+
+                The response must be a single JSON object.
+
                 """
                 return prompt
 
@@ -405,24 +426,17 @@ class chatmessage_analyze():
             if not response:
                 self.parent.logger.error("No response from Gemini")
                 return None
-
-            start_idx = response.find("{")
-            end_idx = response.rfind("}") + 1
-
-            if start_idx == -1 or end_idx == 0:
-                self.parent.logger.error("No JSON found")
-                return None
-
-            json_str = response[start_idx:end_idx]
             try:
-                emotion_result = json.loads(json_str)
+                start_idx = response.find("{")
+                end_idx = response.rfind("}") + 1
 
-                if isinstance(emotion_result,list):
-                    if len(emotion_result) > 0:
-                        self.parent.logger.warning("Received a list instead of a dict, taking the first element")
-                        emotion_result = emotion_result[0]
-                    else:
-                        emotion_result = {}
+                if start_idx == -1 or end_idx == 0:
+                    self.parent.logger.error("No JSON found")
+                    return None
+
+                json_str = response[start_idx:end_idx]
+
+                emotion_result = json.loads(json_str)
 
                 emotion_ratings = emotion_result.get('emotion_ratings', {})
                 primary_emotion = emotion_result.get('primary_emotion')
