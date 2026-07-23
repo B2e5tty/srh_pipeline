@@ -44,7 +44,7 @@ def notify_email(context):
 @dag(
     dag_id="main_two",
     start_date=datetime(2026, 7, 20),
-    schedule=timedelta(hours=3),
+    schedule=timedelta(hours=2),
     catchup=False,
     tags=["gemini", "chat_analysis"],
     on_failure_callback=notify_email
