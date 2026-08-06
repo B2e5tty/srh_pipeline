@@ -13,7 +13,7 @@ from include import messageAnalysis
 logger = logging.getLogger(__name__)
 
 TABLE_CONFIG = {
-    "bot_chatmessage": {"watermark_col": "created_at", "pk": "id"},
+    "bot_chatmessage": {"watermark_col": "timestamp", "pk": "id"},
     "bot_usersession": {"watermark_col": "created_at", "pk": "id"},
     "bot_feedback": {"watermark_col": "created_at", "pk": "id"},
 }
