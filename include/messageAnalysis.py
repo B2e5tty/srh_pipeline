@@ -38,7 +38,7 @@ class chatmessage_analyze():
         SELECT DISTINCT session_id
         FROM bot_chatmessage
         WHERE sender='user'
-        created_at >= '2026-06-04'
+        and created_at >= '2026-06-04'
         """
         self.sessions = pd.read_sql(query, self.source_engine)["session_id"].tolist()
 
