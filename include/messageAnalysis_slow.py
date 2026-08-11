@@ -2,10 +2,8 @@ import os
 import time
 import json
 import logging
-import threading
-from typing import Dict, Optional, Tuple, List
+from typing import Dict, Optional, Tuple
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 import google.generativeai as genai
 from airflow.providers.postgres.hooks.postgres import PostgresHook
@@ -19,15 +17,14 @@ _PROGRESS_TABLES = {
 }
 
 _MAX_CONTEXT_MESSAGES = {
-    "emotion": 50,
+    "emotion": 100,
     "intent": 50,
     "risk": 50,
     "myth": 50,
 }
 
 _MAX_QUOTA_RETRIES = 5
-_MAX_SESSION_WORKERS = 8   # how many sessions to process concurrently
-_MAX_TYPE_WORKERS = 4      # how many analyzer types (emotion/intent/risk/myth) to run concurrently per session
+
 
 class chatmessage_analyze():
 
@@ -69,54 +66,6 @@ class chatmessage_analyze():
         )
         return df
 
-    @staticmethod
-    def _get_thresholds(max_messages: int) -> List[int]:
-        thresholds = []
-        threshold = 5
-        while threshold <= max_messages:
-            thresholds.append(threshold)
-            threshold *= 2
-        return thresholds
-
-    def get_all_progress_counts(self, session_id: str) -> Tuple[int, Dict[str, int]]:
-        """
-        Single-round-trip replacement for calling should_perform_detection()
-        once per analysis type. Returns:
-          - total_messages: count of user messages in this session
-          - result_counts: dict of table_name -> count of existing results
-        Uses one UNION ALL query against the destination DB, and one query
-        against the source DB, instead of 8 separate round trips.
-        """
-        total_messages = 0
-        result_counts = {table: 0 for table in _PROGRESS_TABLES.values()}
-
-        try:
-            union_parts = []
-            for table_name in _PROGRESS_TABLES.values():
-                union_parts.append(
-                    f"SELECT '{table_name}' AS tbl, COUNT(*) AS cnt "
-                    f"FROM {table_name} WHERE session_id = %(session_id)s"
-                )
-            counts_query = " UNION ALL ".join(union_parts)
-
-            with self.destination_engine.connect() as conn:
-                counts_df = pd.read_sql(counts_query, conn, params={"session_id": session_id})
-            result_counts.update(dict(zip(counts_df["tbl"], counts_df["cnt"].astype(int))))
-
-            msg_query = """
-                SELECT COUNT(*) as total FROM bot_chatmessage
-                WHERE sender='user' AND session_id = %(session_id)s
-            """
-            with self.source_engine.connect() as conn:
-                total_messages = int(
-                    pd.read_sql(msg_query, conn, params={"session_id": session_id}).iloc[0]["total"]
-                )
-
-        except Exception as e:
-            self.logger.error(f"Progress count check failed for session {session_id}: {e}")
-
-        return total_messages, result_counts
-
     def should_perform_detection(self, session_id, table_name: str) -> Tuple[bool, int, int]:
         if table_name not in _PROGRESS_TABLES.values():
             raise ValueError(f"Unrecognized progress table: {table_name}")
@@ -147,7 +96,15 @@ class chatmessage_analyze():
                 params={"session_id": session_id}
             ).iloc[0]["total"]
 
-            thresholds = self._get_thresholds(total_messages)
+            def get_thresholds(max_messages):
+                thresholds = []
+                threshold = 5
+                while threshold <= max_messages:
+                    thresholds.append(threshold)
+                    threshold *= 2
+                return thresholds
+
+            thresholds = get_thresholds(total_messages)
             should_classify = len(thresholds) > result_count
 
             if should_classify:
@@ -169,70 +126,6 @@ class chatmessage_analyze():
             self.logger.error(f"Threshold check failed for {table_name}: {e}")
             return False, 0, 0
 
-    def _process_session(self, analyzers, raw_session_id, force: bool = False):
-        """
-        Handles due-window computation + fetch + concurrent analyzer runs
-        for a single session. Designed to be safely called from a worker
-        thread.
-        """
-        session_id = str(raw_session_id)
-        try:
-            total_messages, result_counts = self.get_all_progress_counts(session_id)
-            if total_messages == 0:
-                self.logger.debug(f"Session {session_id}: no user messages, skipping")
-                return
-
-            thresholds = self._get_thresholds(total_messages)
-
-            due_windows = {}  # type_name -> message window size needed this cycle
-            for type_name, table_name in _PROGRESS_TABLES.items():
-                result_count = result_counts.get(table_name, 0)
-                should_run = len(thresholds) > result_count
-                if force or should_run:
-                    if force:
-                        target = total_messages
-                    else:
-                        target = thresholds[result_count] if result_count < len(thresholds) else total_messages
-                    due_windows[type_name] = int(min(target, _MAX_CONTEXT_MESSAGES[type_name]))
-
-            if not due_windows:
-                self.logger.debug(f"Session {session_id}: nothing due this cycle")
-                return
-
-            fetch_limit = max(due_windows.values())
-            messages_df = self.extract_messages(session_id, limit=fetch_limit)
-            if messages_df.empty:
-                self.logger.info(f"No user messages found for session {session_id}")
-                return
-
-            language = (
-                messages_df["language"].iloc[0]
-                if "language" in messages_df.columns
-                else "en"
-            )
-
-            # Run the due analyzer types concurrently for this session,
-            # since each is an independent, mostly network-bound Gemini call.
-            with ThreadPoolExecutor(max_workers=min(_MAX_TYPE_WORKERS, len(due_windows))) as inner_pool:
-                futures = {
-                    inner_pool.submit(
-                        analyzers[type_name].run_for_session,
-                        session_id, messages_df.head(window), language
-                    ): type_name
-                    for type_name, window in due_windows.items()
-                }
-                for future in as_completed(futures):
-                    type_name = futures[future]
-                    try:
-                        future.result()
-                    except Exception as e:
-                        self.logger.error(
-                            f"Error running {type_name} analysis for session {session_id}: {e}"
-                        )
-
-        except Exception as e:
-            self.logger.error(f"Failed session {session_id}: {e}")
-
     def process_all(self, force: bool = False):
         analyzers = {
             "emotion": self.emotion(self),
@@ -240,32 +133,55 @@ class chatmessage_analyze():
             "risk": self.risk(self),
             "myth": self.myth(self),
         }
+
         # Ensure destination tables exist before anything tries to write.
         analyzers["emotion"].create_emotion_table()
         analyzers["intent"].create_classification_table()
         analyzers["risk"].create_risk_table()
         analyzers["myth"].create_myth_table()
 
-        if not self.sessions:
-            self.logger.info("No sessions to process")
-            return
+        for raw_session_id in self.sessions:
+            session_id = str(raw_session_id)
 
-        # Process multiple sessions concurrently. Each session opens its own
-        # short-lived DB connections (via engine.connect()/engine.begin()),
-        # which is safe to do from multiple threads against the same engine.
-        with ThreadPoolExecutor(max_workers=min(_MAX_SESSION_WORKERS, len(self.sessions))) as pool:
-            futures = {
-                pool.submit(self._process_session, analyzers, raw_session_id, force): raw_session_id
-                for raw_session_id in self.sessions
-            }
-            for future in as_completed(futures):
-                raw_session_id = futures[future]
-                try:
-                    future.result()
-                except Exception as e:
-                    # _process_session already catches/logs internally, but
-                    # this is a safety net in case something unexpected escapes.
-                    self.logger.error(f"Unhandled error processing session {raw_session_id}: {e}")
+            try:
+                due_windows = {}  # type_name -> message window size needed this cycle
+                for type_name, table_name in _PROGRESS_TABLES.items():
+                    should_run, total_messages, next_threshold = self.should_perform_detection(
+                        session_id, table_name=table_name
+                    )
+                    if force or should_run:
+                        target = total_messages if force else next_threshold
+                        due_windows[type_name] = int(min(target, _MAX_CONTEXT_MESSAGES[type_name]))
+
+                if not due_windows:
+                    self.logger.debug(f"Session {session_id}: nothing due this cycle")
+                    continue
+
+                fetch_limit = max(due_windows.values())
+                messages_df = self.extract_messages(session_id, limit=fetch_limit)
+
+                if messages_df.empty:
+                    self.logger.info(f"No user messages found for session {session_id}")
+                    continue
+
+                language = (
+                    messages_df["language"].iloc[0]
+                    if "language" in messages_df.columns
+                    else "en"
+                )
+
+                for type_name, window in due_windows.items():
+
+                    df_slice = messages_df.head(window)
+                    try:
+                        analyzers[type_name].run_for_session(session_id, df_slice, language)
+                    except Exception as e:
+                        self.logger.error(
+                            f"Error running {type_name} analysis for session {session_id}: {e}"
+                        )
+
+            except Exception as e:
+                self.logger.error(f"Failed session {session_id}: {e}")
 
     class GeminiAPI:
         def __init__(self):
@@ -273,15 +189,13 @@ class chatmessage_analyze():
             self.api_list = [key.strip() for key in os.getenv("GEMINI_API_KEY").split(",")]
             genai.configure(api_key=self.api_list[self.current_key_index])
             self.model = genai.GenerativeModel("gemini-3.1-flash-lite")
-            self._lock = threading.Lock()  # <-- add this
 
         def ask_gemini(self, prompt, temperature: float = 0.7) -> str:
             quota_retries = 0
+
             while True:
                 try:
-                    with self._lock:            # <-- snapshot model safely
-                        model = self.model
-                    response = model.generate_content(
+                    response = self.model.generate_content(
                         prompt,
                         generation_config=genai.GenerationConfig(
                             temperature=temperature,
@@ -289,8 +203,12 @@ class chatmessage_analyze():
                         )
                     )
                     return response.text
+
                 except Exception as e:
                     error_text = str(e)
+
+                    # Temporary quota/rate limit - bounded retries, not
+                    # an unbounded loop that can hang a task forever.
                     if ("RESOURCE_EXHAUSTED" in error_text
                             or "Quota exceeded" in error_text
                             or "429" in error_text):
@@ -300,20 +218,27 @@ class chatmessage_analyze():
                                 f"Exceeded max quota retries ({_MAX_QUOTA_RETRIES}) for Gemini API"
                             ) from e
                         print(f"Rate limit reached. Waiting 120 seconds... "
-                            f"(retry {quota_retries}/{_MAX_QUOTA_RETRIES})")
+                              f"(retry {quota_retries}/{_MAX_QUOTA_RETRIES})")
                         time.sleep(120)
                         continue
+
+                    # Invalid API key - rotate to the next one
                     elif "API_KEY_INVALID" in error_text:
-                        with self._lock:         # <-- guard rotation
-                            self.current_key_index += 1
-                            if self.current_key_index >= len(self.api_list):
-                                raise Exception("No valid API keys remaining.")
-                            print(f"Switching to API key #{self.current_key_index + 1}")
-                            genai.configure(api_key=self.api_list[self.current_key_index])
-                            self.model = genai.GenerativeModel("gemini-3.1-flash-lite")
+                        self.current_key_index += 1
+
+                        if self.current_key_index >= len(self.api_list):
+                            raise Exception("No valid API keys remaining.")
+
+                        print(f"Switching to API key #{self.current_key_index + 1}")
+
+                        genai.configure(api_key=self.api_list[self.current_key_index])
+                        self.model = genai.GenerativeModel("gemini-3.1-flash-lite")
+
                         continue
+
                     else:
                         raise
+
     class emotion:
         def __init__(self, chatmessage_analyze):
             self.parent = chatmessage_analyze
