@@ -301,7 +301,7 @@ class chatmessage_analyze():
                             ) from e
                         print(f"Rate limit reached. Waiting 120 seconds... "
                             f"(retry {quota_retries}/{_MAX_QUOTA_RETRIES})")
-                        time.sleep(120)
+                        time.sleep(60)
                         continue
                     elif "API_KEY_INVALID" in error_text:
                         with self._lock:         # <-- guard rotation
