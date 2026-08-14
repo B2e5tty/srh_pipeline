@@ -299,7 +299,7 @@ class chatmessage_analyze():
                             raise Exception(
                                 f"Exceeded max quota retries ({_MAX_QUOTA_RETRIES}) for Gemini API"
                             ) from e
-                        print(f"Rate limit reached. Waiting 120 seconds... "
+                        print(f"Rate limit reached. Waiting 60 seconds... "
                             f"(retry {quota_retries}/{_MAX_QUOTA_RETRIES})")
                         time.sleep(60)
                         continue
@@ -629,6 +629,7 @@ class chatmessage_analyze():
 
             result["session_id"] = session_id
             self.save_emotion_detection(result)
+            self.parent.logger.info(f"Emotion detection saved for session {session_id}: {result['risk_level']}")
             return result
 
         def perform_emotion_detection(self, session, force: bool = False):
