@@ -50,8 +50,8 @@ def notify_email(context):
 
 @dag(
     dag_id="main_two",
-    start_date=datetime(2026, 7, 20),
-    # schedule="0 21 * * *",
+    start_date=datetime(2026, 8, 17),
+    schedule="0 */3 * * *",
     schedule = None,
     catchup=False,
     tags=["gemini", "chat_analysis"],
