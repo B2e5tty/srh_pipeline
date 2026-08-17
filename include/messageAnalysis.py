@@ -629,7 +629,7 @@ class chatmessage_analyze():
 
             result["session_id"] = session_id
             self.save_emotion_detection(result)
-            self.parent.logger.info(f"Emotion detection saved for session {session_id}: {result['risk_level']}")
+            self.parent.logger.info(f"Emotion detection saved for session {session_id}: {result['primary_emotion']}")
             return result
 
         def perform_emotion_detection(self, session, force: bool = False):
